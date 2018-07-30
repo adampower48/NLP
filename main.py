@@ -44,7 +44,7 @@ def gen_indices(words):
 
 
 def parse_dataset(filename, chars=False, dataset_length=None):
-    with open(filename) as f:
+    with open(filename, encoding="utf8") as f:
         if chars:
             # Characters
             word_list = list(f.read())
@@ -130,7 +130,7 @@ def train(resume=False):
                         validation_steps=len(valid_data) // (BATCH_SIZE * NUM_STEPS), callbacks=[checkpointer])
 
 
-def generate_words(model, seed_data, num_predict):
+def predict_from_seed(model, seed_data, num_predict):
     pred_print_out = []
     for i in range(num_predict):
         prediction = model.predict(seed_data)
@@ -141,18 +141,41 @@ def generate_words(model, seed_data, num_predict):
     return pred_print_out
 
 
+def predict_from_generator(model, generator, num_predict, dummy_iters):
+    act_output = []
+    pred_output = []
+    for i in range(num_predict):
+        data = next(generator.generate())
+        prediction = model.predict(data[0])
+        predict_word = np.argmax(prediction[:, NUM_STEPS - 1, :])
+        act_output.append(word_list[NUM_STEPS + dummy_iters + i])
+        pred_output.append(i_w[predict_word])
+
+    return act_output, pred_output
+
+
 def demo():
     model = keras.models.load_model(model_filename)
-    dummy_iters = 10000
     example_training_generator = KerasBatchGenerator(train_data, NUM_STEPS, 1, VOCAB_SIZE, skip_step=1)
+    num_predict = 100
+
+    dummy_iters = 9000
     for i in range(dummy_iters):
         next(example_training_generator.generate())
-    num_predict = 100
-    seed_data = next(example_training_generator.generate())[0]
-    print("Seed:\n", *[i_w[int(x)] for x in seed_data[0]], sep="")
-    print("Predicted words:\n", *generate_words(model, seed_data, num_predict), sep="")
+
+    SEED = True
+    if SEED:
+        # From seed
+        seed_data = next(example_training_generator.generate())[0]
+        print("Seed:\n", *[i_w[int(x)] for x in seed_data[0]], sep="")
+        print("Predicted words:\n", *predict_from_seed(model, seed_data, num_predict), sep="")
+    else:
+        # From dataset
+        act, pred = predict_from_generator(model, example_training_generator, num_predict, dummy_iters)
+        print("Actual words:\n", *act, sep="")
+        print("Predicted words:\n", *pred, sep="")
 
 
 if __name__ == '__main__':
-    train(resume=True)
-    # demo()
+    # train(resume=False)
+    demo()
