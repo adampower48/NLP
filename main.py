@@ -1,4 +1,5 @@
 import string
+import sys
 from collections import Counter
 
 import numpy as np
@@ -14,48 +15,115 @@ FILENAMES_MODELS = {
     "words": "checkpoints/model_words.hdf5",
     "chars": "checkpoints/model_chars.hdf5",
     "dracula_chars": "checkpoints/model_drac_c.hdf5",
+    "dracula_words": "checkpoints/model_drac_w.hdf5",
 }
 
 # DATASET PARAMETERS
-model_filename = FILENAMES_MODELS["dracula_chars"]
+model_filename = FILENAMES_MODELS["dracula_words"]
 data_filename = FILENAMES_DATASETS["dracula"]
-use_chars = True
+use_chars = False
+clean_file = True
+dicttionary_size = 3000
 
 CHARS = string.ascii_letters + string.whitespace + string.digits  # + string.punctuation
 
 # NETWORK PARAMETERS
-NUM_STEPS = 100
+NUM_STEPS = 20
 BATCH_SIZE = 20
 HIDDEN_SIZE = 256
 NUM_EPOCHS = 200
 
 
-def gen_indices(words):
+def clean_data(data, remove_punctuation=True, lower=True, trim_whitespace=True):
+    if lower:
+        data = data.lower()
+
+    if remove_punctuation:
+        for p in string.punctuation:
+            data = data.replace(p, "")
+
+    if trim_whitespace:
+        data = data.replace("\n", " ")
+        for _ in range(10):
+            data = data.replace("  ", " ")
+
+    return data
+
+
+def gen_indices(words, max_indices=1000):
+    UNKNOWN_TOKEN = "<UNK>"
+    UNKNOWN_INDEX = 0
     counter = Counter(words)
     count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
 
     words_to_ind = {}
-    ind_to_words = {}
+    ind_to_words = {UNKNOWN_INDEX: UNKNOWN_TOKEN}
     for i, (w, _) in enumerate(count_pairs):
-        words_to_ind[w] = i
-        ind_to_words[i] = w
+        if i < max_indices:
+            words_to_ind[w] = i + 1
+            ind_to_words[i + 1] = w
+        else:
+            words_to_ind[w] = UNKNOWN_INDEX
 
     return words_to_ind, ind_to_words
 
 
-def parse_dataset(filename, chars=False, dataset_length=None):
+def pretrained_embedding_layer(word_to_index):
+    with open("pretrained_weights/glove.6B.50d.txt", encoding="utf8") as f:
+        lines = [l.split() for l in f.readlines()]
+        word_to_vec_map = {l[0]: np.array(list(map(float, l[1:]))) for l in lines}
+    """
+    Creates a Keras Embedding() layer and loads in pre-trained GloVe 50-dimensional vectors.
+
+    Arguments:
+    word_to_vec_map -- dictionary mapping words to their GloVe vector representation.
+    word_to_index -- dictionary mapping from words to their indices in the vocabulary (400,001 words)
+
+    Returns:
+    embedding_layer -- pretrained layer Keras instance
+    """
+
+    vocab_len = len(word_to_index) + 1  # adding 1 to fit Keras embedding (requirement)
+    emb_dim = word_to_vec_map["cucumber"].shape[0]  # define dimensionality of your GloVe word vectors (= 50)
+
+    # Initialize the embedding matrix as a numpy array of zeros of shape (vocab_len, dimensions of word vectors = emb_dim)
+    emb_matrix = np.zeros((vocab_len, emb_dim))
+
+    # Set each row "index" of the embedding matrix to be the word vector representation of the "index"th word of the vocabulary
+    for word, index in word_to_index.items():
+        try:
+            emb_matrix[index, :] = word_to_vec_map[word]
+        except KeyError:
+            pass
+
+    # Define Keras embedding layer with the correct output/input sizes, make it trainable. Use Embedding(...). Make sure to set trainable=False.
+    embedding_layer = keras.layers.Embedding(vocab_len, emb_dim, trainable=False)
+    # Build the embedding layer, it is required before setting the weights of the embedding layer. Do not modify the "None".
+    embedding_layer.build((None,))
+
+    # Set the weights of the embedding layer to the embedding matrix. Your layer is now pretrained.
+    embedding_layer.set_weights([emb_matrix])
+
+    return embedding_layer
+
+
+def parse_dataset(filename, chars=False, dataset_length=None, max_indices=1000, clean=False):
     with open(filename, encoding="utf8") as f:
+        data = f.read()
         if chars:
             # Characters
-            word_list = list(f.read())
+            word_list = list(data)
         else:
             # Words
-            word_list = f.read().split()
+            if clean:
+                word_list = clean_data(data).split()
+            else:
+                word_list = data.split()
 
     if dataset_length:
         word_list = word_list[:dataset_length]
 
-    w_i, i_w = gen_indices(word_list)
+    w_i, i_w = gen_indices(word_list, max_indices)
     index_list = [w_i[w] for w in word_list]
 
     return word_list, index_list, w_i, i_w
@@ -91,13 +159,14 @@ class KerasBatchGenerator:
             yield x, y
 
 
-word_list, index_list, w_i, i_w = parse_dataset(data_filename, use_chars)
+word_list, index_list, w_i, i_w = parse_dataset(data_filename, use_chars, clean=clean_file,
+                                                max_indices=dicttionary_size)
 
 split = int(len(index_list) * 0.8)
 train_data, valid_data = index_list[:split], index_list[split:]
 
-VOCAB_SIZE = len(w_i.keys())
-print("Vocabulary size:", VOCAB_SIZE)
+VOCAB_SIZE = len(i_w.keys())
+print("Vocabulary size:", VOCAB_SIZE, "/", len(w_i.keys()))
 train_data_generator = KerasBatchGenerator(train_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
 valid_data_generator = KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
 
@@ -105,11 +174,10 @@ valid_data_generator = KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VO
 def train(resume=False):
     if not resume:
         model = keras.models.Sequential([
-            keras.layers.Embedding(VOCAB_SIZE, HIDDEN_SIZE, input_length=NUM_STEPS),
+            # keras.layers.Embedding(VOCAB_SIZE, HIDDEN_SIZE, input_length=NUM_STEPS),
+            pretrained_embedding_layer(w_i),  # Using GLOVE pre-trained embedding
             keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2),
-            # keras.layers.Dropout(0.2),
             keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2),
-            # keras.layers.Dropout(0.2),
             keras.layers.TimeDistributed(keras.layers.Dense(VOCAB_SIZE)),
             keras.layers.Activation(keras.activations.softmax),
 
@@ -123,7 +191,7 @@ def train(resume=False):
 
     model.summary()
 
-    checkpointer = keras.callbacks.ModelCheckpoint(model_filename, verbose=1, period=5, save_best_only=True)
+    checkpointer = keras.callbacks.ModelCheckpoint(model_filename, verbose=1, period=1, save_best_only=True)
 
     model.fit_generator(train_data_generator.generate(), len(train_data) // (BATCH_SIZE * NUM_STEPS), NUM_EPOCHS,
                         validation_data=valid_data_generator.generate(),
@@ -154,28 +222,41 @@ def predict_from_generator(model, generator, num_predict, dummy_iters):
     return act_output, pred_output
 
 
-def demo():
+def demo(SEED=True, words=True):
+    if words:
+        sep_char = " "
+    else:
+        sep_char = ""
+
     model = keras.models.load_model(model_filename)
     example_training_generator = KerasBatchGenerator(train_data, NUM_STEPS, 1, VOCAB_SIZE, skip_step=1)
     num_predict = 100
 
-    dummy_iters = 9000
+    dummy_iters = np.random.randint(len(word_list) - num_predict)
     for i in range(dummy_iters):
         next(example_training_generator.generate())
 
-    SEED = True
     if SEED:
         # From seed
         seed_data = next(example_training_generator.generate())[0]
-        print("Seed:\n", *[i_w[int(x)] for x in seed_data[0]], sep="")
-        print("Predicted words:\n", *predict_from_seed(model, seed_data, num_predict), sep="")
+        print("Seed:\n", *[i_w[int(x)] for x in seed_data[0]], sep=sep_char)
+        print("Predicted words:\n", *predict_from_seed(model, seed_data, num_predict), sep=sep_char)
     else:
         # From dataset
         act, pred = predict_from_generator(model, example_training_generator, num_predict, dummy_iters)
-        print("Actual words:\n", *act, sep="")
-        print("Predicted words:\n", *pred, sep="")
+        print("Actual words:\n", *act, sep=sep_char)
+        print("Predicted words:\n", *pred, sep=sep_char)
 
 
 if __name__ == '__main__':
-    # train(resume=False)
-    demo()
+    if len(sys.argv) < 2:
+        # train(resume=True)
+        demo(SEED=True)
+        exit()
+
+    if sys.argv[1] == "demo":
+        demo()
+    elif sys.argv[1] == "resume":
+        train(resume=True)
+    elif sys.argv[1] == "new":
+        train(resume=False)
