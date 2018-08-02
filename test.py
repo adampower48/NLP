@@ -1,5 +1,8 @@
 from string import punctuation
 
+import spacy
+from spacy import tokenizer
+
 
 def normalise_file():
     FILENAME = "shakespeare.txt"
@@ -13,7 +16,6 @@ def normalise_file():
         data = data.replace(p, "")
 
     data = data.replace("\n", " ")
-    data = data.replace("\"", "")
     for _ in range(10):
         data = data.replace("  ", " ")
 
@@ -24,6 +26,13 @@ def normalise_file():
 # normalise_file()
 
 
+nlp = spacy.load("en_vectors_web_lg")
+
 with open("datasets/dracula.txt", encoding="utf8") as f:
-    chars = list(f.read())
-    print(*chars[:1000])
+    data = f.read()
+
+doc = nlp(data)
+print(len(doc.vocab))
+tok = tokenizer.Tokenizer(nlp.vocab)
+
+# print(nlp.vocab["superstition"].vector.shape)
