@@ -5,10 +5,13 @@ from collections import Counter
 import numpy as np
 from tensorflow import keras
 
+# Works with large single text bodies
+
 FILENAMES_DATASETS = {
     "lorem_ipsum": "datasets/lorem.txt",
     "dracula": "datasets/dracula.txt",
     "shakespeare": "datasets/shakespeare.txt",
+    "trump": "datasets/trump_tweets.json",
 }
 
 FILENAMES_MODELS = {
@@ -16,14 +19,15 @@ FILENAMES_MODELS = {
     "chars": "checkpoints/model_chars.hdf5",
     "dracula_chars": "checkpoints/model_drac_c.hdf5",
     "dracula_words": "checkpoints/model_drac_w.hdf5",
+    "trump_chars": "checkpoints/model_trump_c.hdf5",
 }
 
 # DATASET PARAMETERS
-model_filename = FILENAMES_MODELS["dracula_words"]
-data_filename = FILENAMES_DATASETS["dracula"]
-use_chars = False
+model_filename = FILENAMES_MODELS["trump_chars"]
+data_filename = FILENAMES_DATASETS["trump"]
+use_chars = True
 clean_file = True
-dicttionary_size = 3000
+dictionary_size = 3000
 
 CHARS = string.ascii_letters + string.whitespace + string.digits  # + string.punctuation
 
@@ -160,13 +164,14 @@ class KerasBatchGenerator:
 
 
 word_list, index_list, w_i, i_w = parse_dataset(data_filename, use_chars, clean=clean_file,
-                                                max_indices=dicttionary_size)
+                                                max_indices=dictionary_size)
 
 split = int(len(index_list) * 0.8)
 train_data, valid_data = index_list[:split], index_list[split:]
 
 VOCAB_SIZE = len(i_w.keys())
 print("Vocabulary size:", VOCAB_SIZE, "/", len(w_i.keys()))
+print(*w_i.keys())
 train_data_generator = KerasBatchGenerator(train_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
 valid_data_generator = KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
 
@@ -174,10 +179,10 @@ valid_data_generator = KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VO
 def train(resume=False):
     if not resume:
         model = keras.models.Sequential([
-            # keras.layers.Embedding(VOCAB_SIZE, HIDDEN_SIZE, input_length=NUM_STEPS),
-            pretrained_embedding_layer(w_i),  # Using GLOVE pre-trained embedding
-            keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2),
-            keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2),
+            keras.layers.Embedding(VOCAB_SIZE, HIDDEN_SIZE, input_length=NUM_STEPS),
+            # pretrained_embedding_layer(w_i),  # Using GLOVE pre-trained embedding
+            keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2, implementation=2),
+            keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, dropout=0.2, implementation=2),
             keras.layers.TimeDistributed(keras.layers.Dense(VOCAB_SIZE)),
             keras.layers.Lambda(lambda x: x / 5),  # Adding temperature to softmax layer
             keras.layers.Activation(keras.activations.softmax),
@@ -194,9 +199,9 @@ def train(resume=False):
 
     checkpointer = keras.callbacks.ModelCheckpoint(model_filename, verbose=1, period=1, save_best_only=True)
 
-    model.fit_generator(train_data_generator.generate(), len(train_data) // (BATCH_SIZE * NUM_STEPS), NUM_EPOCHS,
+    model.fit_generator(train_data_generator.generate(), (len(train_data) - NUM_STEPS) // BATCH_SIZE, NUM_EPOCHS,
                         validation_data=valid_data_generator.generate(),
-                        validation_steps=len(valid_data) // (BATCH_SIZE * NUM_STEPS), callbacks=[checkpointer])
+                        validation_steps=(len(valid_data) - NUM_STEPS) // BATCH_SIZE, callbacks=[checkpointer])
 
 
 def predict_from_seed(model, seed_data, num_predict, verbose=False):
