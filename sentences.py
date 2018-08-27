@@ -4,16 +4,18 @@ from tensorflow import keras
 from data_loader import read_file, clean_data, generate_indices, KerasBatchGenerator
 
 FILENAMES_DATASETS = {
-    "trump": "datasets/trump_tweets.txt",
+    "trump_tweets": "datasets/trump_tweets.txt",
+    "trump_speech": "datasets/trump_transcripts/speech_all.txt",
 }
 
 FILENAMES_MODELS = {
     "trump_chars": "checkpoints/model_trump_c.hdf5",
+    "trump_speech_chars": "checkpoints/model_trump_speech_c_small.hdf5",
 }
 
 # Dataset Params
 model_filename = FILENAMES_MODELS["trump_chars"]
-data_filename = FILENAMES_DATASETS["trump"]
+data_filename = FILENAMES_DATASETS["trump_tweets"]
 
 # Network Params
 NUM_STEPS = 100
@@ -67,7 +69,8 @@ def train(resume=False):
             keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, implementation=2, dropout=0.1),
             keras.layers.LSTM(HIDDEN_SIZE, return_sequences=True, implementation=2, dropout=0.1),
             keras.layers.TimeDistributed(keras.layers.Dense(VOCAB_SIZE)),
-            keras.layers.Lambda(lambda x: x / 1.5),  # Adding temperature to softmax layer
+            # Adding temperature to softmax layer (lower = more random, higher = more focussed)
+            keras.layers.Lambda(lambda x: x * 0.6),
             keras.layers.Activation(keras.activations.softmax),
         ])
     else:
@@ -140,5 +143,5 @@ def demo(deterministic=False, words=True, num_predict=280):
 
 
 if __name__ == '__main__':
-    # train(resume=True)
-    demo(False, False, 1000)
+    train(resume=True)
+    # demo(False, False, 1000)

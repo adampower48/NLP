@@ -1,5 +1,7 @@
 import codecs
 import collections
+import csv
+import json
 import string
 import sys
 
@@ -22,6 +24,49 @@ def read_file(filename, encoding=None):
         data = f.read()
 
     return data
+
+
+def read_csv(filename, encoding=None, delimiter=",", quotechar="\""):
+    """
+
+    :param filename:    str
+    :param encoding:    str
+    :param delimiter:   str
+    :param quotechar:   str
+    :return:            list[list[str]]
+    """
+    if encoding is None:
+        encoding = sys.getdefaultencoding()
+
+    with codecs.open(filename, "r", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+        data = [l for l in reader]
+
+    return data
+
+
+def read_json(filename, encoding=None):
+    if encoding is None:
+        encoding = sys.getdefaultencoding()
+
+    with codecs.open(filename, "r", encoding) as f:
+        data = json.load(f)
+
+    return data
+
+
+def write_file(filename, data, encoding=None):
+    """
+
+    :param filename:    str
+    :param data:        str
+    :param encoding:    str
+    """
+    if encoding is None:
+        encoding = sys.getdefaultencoding()
+
+    with codecs.open(filename, "w", encoding) as f:
+        f.write(data)
 
 
 def generate_indices(token_list, pad_tokens=True, max_indices=None):
@@ -70,7 +115,7 @@ def generate_indices(token_list, pad_tokens=True, max_indices=None):
     return tokens_to_inds, inds_to_tokens
 
 
-def clean_data(data, lower=False, punctuation=False, whitespace=False, other=False):
+def clean_data(data, lower=False, punctuation=False, whitespace=False, other=False, newline=False):
     """
 
     :param data:        str
@@ -78,6 +123,7 @@ def clean_data(data, lower=False, punctuation=False, whitespace=False, other=Fal
     :param punctuation: bool
     :param whitespace:  bool
     :param other:       bool
+    :param newline:     bool
     :return:            str
     """
 
@@ -88,13 +134,16 @@ def clean_data(data, lower=False, punctuation=False, whitespace=False, other=Fal
         for p in string.punctuation:
             data = data.replace(p, "")
 
+    if newline:
+        data = data.replace("\n", " ")
+
     if whitespace:
         # + non-breaking space
         for w in string.whitespace + " ":
-            if w == " ":
+            if w in (" ", "\n"):
                 continue
 
-            data.replace(w, " ")
+            data = data.replace(w, " ")
 
         # Trim consecutive whitespace
         for _ in range(10):
@@ -102,8 +151,10 @@ def clean_data(data, lower=False, punctuation=False, whitespace=False, other=Fal
 
     if other:
         # Normalise punctuation
-        for c in "‘’“”":
+        for c in "“”":
             data = data.replace(c, "\"")
+        for c in "‘’`":
+            data = data.replace(c, "'")
 
         for c in "–—•":
             data = data.replace(c, "-")
@@ -116,6 +167,39 @@ def clean_data(data, lower=False, punctuation=False, whitespace=False, other=Fal
                 data = data.replace(c, "")
 
     return data
+
+
+def pretrained_embedding(filename, vocab, input_length, freeze=True):
+    """
+    Currently only works with json files
+
+    :param filename:        str
+    :param vocab:           dict[T: int]
+    :param input_length:    int
+    :param freeze:          bool
+    :return:                keras.layers.Embedding
+    """
+
+    token_to_vec_map = read_json(filename)
+
+    vocab_len = max(vocab.values()) + 1
+    emb_dim = len(token_to_vec_map[list(vocab.keys())[0]])
+
+    # Copy vectors to Embedding matrix
+    emb_matrix = np.zeros((vocab_len, emb_dim))
+    for token, index in vocab.items():
+        try:
+            emb_matrix[index, :] = token_to_vec_map[token]
+        except KeyError:
+            # Leave as zero-vector
+            pass
+
+    # Build embedding layer
+    embedding_layer = keras.layers.Embedding(vocab_len, emb_dim, trainable=not freeze, input_length=input_length)
+    embedding_layer.build((None,))
+    embedding_layer.set_weights([emb_matrix])
+
+    return embedding_layer
 
 
 class KerasBatchGenerator:
