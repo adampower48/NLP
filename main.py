@@ -3,8 +3,8 @@ import sys
 import numpy as np
 from tensorflow import keras
 
-import models as myModels
-from data_loader import clean_data, generate_indices, KerasBatchGenerator, read_file
+import data_loader as dl
+import models as my_models
 
 # Works with large single text bodies
 
@@ -14,6 +14,8 @@ FILENAMES_DATASETS = {
     "shakespeare": "datasets/shakespeare.txt",
     "trump_tweets": "datasets/trump_tweets.txt",
     "trump_speech": "datasets/trump_transcripts/speech_all.txt",
+    "trump_tweets_speech": "datasets/trump_tweets_speech.txt",
+
 }
 
 FILENAMES_MODELS = {
@@ -24,6 +26,7 @@ FILENAMES_MODELS = {
     "trump_tweets_chars": "checkpoints/model_trump_tweets_c.hdf5",
     "trump_speech_chars_small": "checkpoints/model_trump_speech_c_small.hdf5",
     "trump_speech_chars_large": "checkpoints/model_trump_speech_c_large.hdf5",
+    "trump_tweets_speech": "checkpoints/model_trump_tweets_speech.hdf5",
 }
 
 FILENAMES_EMBEDDING = {
@@ -31,9 +34,17 @@ FILENAMES_EMBEDDING = {
     "glove_6B_50D": "pretrained_weights/glove.6B.50d.txt",
 }
 
+FILENAMES_VOCAB = {
+    "trump_tweets_91": "vocabs/trump_91.json",
+    "trump_speech_81": "vocabs/trump_81.json",
+    "trump_t_s_92": "vocabs/trump_92.json",
+}
+
 # DATASET PARAMETERS
-model_filename = FILENAMES_MODELS["trump_tweets_chars"]
-data_filename = FILENAMES_DATASETS["trump_tweets"]
+model_filename = FILENAMES_MODELS["trump_tweets_speech"]
+data_filename = FILENAMES_DATASETS["trump_tweets_speech"]
+vocab_filename = FILENAMES_VOCAB["trump_t_s_92"]
+load_vocab = True
 use_chars = True
 clean = {
     "lower": False,
@@ -42,6 +53,7 @@ clean = {
     "other": True,
 }
 dictionary_size = 3000
+validation_split = 0.95
 
 # NETWORK PARAMETERS
 embedding_filename = FILENAMES_EMBEDDING["chars_300D"]
@@ -53,40 +65,49 @@ NUM_EPOCHS = 2000
 
 # GENERATION PARAMETERS
 PROB_CUTOFF = 0.9
-DEMO_STEPS = 1000
+DEMO_STEPS = 512
 
 
-def parse_dataset(filename, chars=False, dataset_length=None, max_indices=1000, clean=None):
+def parse_dataset(filename, chars=False, dataset_length=None, max_indices=1000, clean=None, load_vocab=False):
     if clean is None:
         clean = {}
 
-    data = read_file(filename, encoding="utf-8")
+    data = dl.read_file(filename, encoding="utf-8")
     if chars:
         # Characters
-        word_list = list(clean_data(data, **clean))
+        word_list = list(dl.clean_data(data, **clean))
     else:
         # Words
-        word_list = clean_data(data, **clean).split()
+        word_list = dl.clean_data(data, **clean).split()
 
     if dataset_length:
         word_list = word_list[:dataset_length]
 
-    w_i, i_w = generate_indices(word_list, max_indices)
-    index_list = [w_i[w] for w in word_list]
+    if load_vocab:
+        w_i = dl.read_json(vocab_filename)
+        i_w = dl.get_pad_dict()
+        i_w.update({i: w for w, i in w_i.items()})
+    else:
+        w_i, i_w = dl.generate_indices(word_list, max_indices)
+        # Save generated vocab
+        dl.write_json(vocab_filename, w_i)
+
+    index_list = [w_i.get(w, 0) for w in word_list]
 
     return word_list, index_list, w_i, i_w
 
 
 word_list, index_list, w_i, i_w = parse_dataset(data_filename, use_chars, clean=clean,
-                                                max_indices=dictionary_size)
-split = int(len(index_list) * 0.8)
+                                                max_indices=dictionary_size, load_vocab=load_vocab)
+
+split = int(len(index_list) * validation_split)
 train_data, valid_data = index_list[:split], index_list[split:]
 
 VOCAB_SIZE = len(i_w.keys())
 print("Vocabulary size:", VOCAB_SIZE, "/", len(w_i.keys()))
 print(*sorted(list(w_i.keys())))
-train_data_generator = KerasBatchGenerator(train_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
-valid_data_generator = KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
+train_data_generator = dl.RandomSampleGenerator(train_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE)
+valid_data_generator = dl.KerasBatchGenerator(valid_data, NUM_STEPS, BATCH_SIZE, VOCAB_SIZE, skip_step=1)
 
 
 class DemoCallback(keras.callbacks.Callback):
@@ -94,7 +115,13 @@ class DemoCallback(keras.callbacks.Callback):
         demo(False, False, 280)
 
 
-def filterPercentile(percentages, cutoff):
+def filter_percentile(percentages, cutoff):
+    """
+    Generates new distribution for all elements under the given percentile
+    :param percentages: list[float (0, 1)] - Probability ditribution (index representing element, value representing percentage likelihood)
+    :param cutoff:      float (0, 1)
+    :return:            list[int], list[float (0, 1)] - Element indexes from input list, Corresponding new percentage likelihood
+    """
     sorted_idxs = np.argsort(percentages)[::-1]
     cum_per = np.cumsum(percentages[sorted_idxs])
     ind = next(i for i in range(len(cum_per)) if cum_per[i] > cutoff)
@@ -104,7 +131,13 @@ def filterPercentile(percentages, cutoff):
     return top, adjusted_percentages
 
 
-def filterN(percentages, n):
+def filter_n(percentages, n):
+    """
+    Generates new distribution for the N most likely elements
+    :param percentages: list[float (0, 1)] - Probability ditribution (index representing element, value representing percentage likelihood)
+    :param n:           int
+    :return:            list[int], list[float (0, 1)] - Element indexes from input list, Corresponding new percentage likelihood
+    """
     top_n = np.argpartition(percentages, -n)[-n:]
     top_n_weights = percentages[top_n]
     sorted_inds = np.argsort(top_n_weights)[::-1]
@@ -115,10 +148,10 @@ def filterN(percentages, n):
 
 
 def train(resume=False):
-    if not resume:
-        model = myModels.large_pt_embedding(VOCAB_SIZE, NUM_STEPS, w_i, embedding_filename, freeze_embedding)
-    else:
+    if resume:
         model = keras.models.load_model(model_filename)
+    else:
+        model = my_models.large_pt_embedding(VOCAB_SIZE, NUM_STEPS, w_i, embedding_filename, freeze_embedding)
 
     model.compile(optimizer=keras.optimizers.Adam(),
                   loss=keras.losses.categorical_crossentropy,
@@ -128,12 +161,12 @@ def train(resume=False):
     model.save(model_filename)
 
     checkpointer = keras.callbacks.ModelCheckpoint(model_filename, verbose=1, period=1, save_best_only=True)
-    demoCallback = DemoCallback()
+    demo_callback = DemoCallback()
 
     model.fit_generator(train_data_generator.generate(), (len(train_data) - NUM_STEPS) // BATCH_SIZE, NUM_EPOCHS,
                         validation_data=valid_data_generator.generate(),
                         validation_steps=(len(valid_data) - NUM_STEPS) // BATCH_SIZE,
-                        callbacks=[checkpointer, demoCallback])
+                        callbacks=[checkpointer, demo_callback])
 
 
 def predict_from_seed(model, seed_data, num_predict, verbose=False, deterministic=False):
@@ -143,7 +176,7 @@ def predict_from_seed(model, seed_data, num_predict, verbose=False, deterministi
         prediction = model.predict(seed_data)
         determ_word = np.argmax(prediction[:, NUM_STEPS - 1, :])
         # prob_word = np.random.choice(range(VOCAB_SIZE), p=prediction[0, NUM_STEPS - 1, :])  # All
-        top, percentages = filterPercentile(prediction[0, NUM_STEPS - 1, :], PROB_CUTOFF)  # Percentile
+        top, percentages = filter_percentile(prediction[0, NUM_STEPS - 1, :], PROB_CUTOFF)  # Percentile
         prob_word = np.random.choice(top, p=percentages)  # Percentile
         determ_print_out.append(i_w[determ_word])
         prob_output.append(i_w[prob_word])
@@ -155,7 +188,7 @@ def predict_from_seed(model, seed_data, num_predict, verbose=False, deterministi
             # top, percentages = filterN(prediction[0, NUM_STEPS - 1, :], 5)
 
             # Top Percentile
-            top, percentages = filterPercentile(prediction[0, NUM_STEPS - 1, :], PROB_CUTOFF)
+            top, percentages = filter_percentile(prediction[0, NUM_STEPS - 1, :], PROB_CUTOFF)
             top_words = [i_w[i] for i in top]
             print(*["{} {:.4f}".format(repr(x[0]), x[1]) for x in zip(top_words, percentages)], sep=", \t")
 
@@ -193,12 +226,7 @@ def demo(deterministic=False, words=False, num_predict=280):
 
     # Build model & dataset
     model = keras.models.load_model(model_filename)
-    example_training_generator = KerasBatchGenerator(train_data, NUM_STEPS, 1, VOCAB_SIZE, skip_step=1)
-
-    # Random starting index
-    dummy_iters = np.random.randint(10000 - num_predict)
-    for i in range(dummy_iters):
-        next(example_training_generator.generate())
+    example_training_generator = dl.RandomSampleGenerator(train_data, NUM_STEPS, 1, VOCAB_SIZE)
 
     # Generate text
     seed_data = next(example_training_generator.generate())[0]
@@ -214,6 +242,7 @@ if __name__ == '__main__':
 
     if len(sys.argv) < 2:
         train(resume=True)
+        # train(resume=False)
         # demo(False, False, DEMO_STEPS)
         exit()
 

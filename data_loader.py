@@ -69,6 +69,25 @@ def write_file(filename, data, encoding=None):
         f.write(data)
 
 
+def write_json(filename, data, encoding=None):
+    write_file(filename, json.dumps(data), encoding)
+
+
+def get_pad_dict():
+    UNKNOWN_TOKEN = "<UNK>"
+    UNKNOWN_INDEX = 0
+    START_TOKEN = "<START>"
+    START_INDEX = 1
+    END_TOKEN = "<END>"
+    END_INDEX = 2
+
+    return {
+        UNKNOWN_INDEX: UNKNOWN_TOKEN,
+        START_INDEX: START_TOKEN,
+        END_INDEX: END_TOKEN,
+    }
+
+
 def generate_indices(token_list, pad_tokens=True, max_indices=None):
     """
 
@@ -82,18 +101,7 @@ def generate_indices(token_list, pad_tokens=True, max_indices=None):
     inds_to_tokens = {}
 
     if pad_tokens:
-        UNKNOWN_TOKEN = "<UNK>"
-        UNKNOWN_INDEX = 0
-        START_TOKEN = "<START>"
-        START_INDEX = 1
-        END_TOKEN = "<END>"
-        END_INDEX = 2
-
-        inds_to_tokens = {
-            UNKNOWN_INDEX: UNKNOWN_TOKEN,
-            START_INDEX: START_TOKEN,
-            END_INDEX: END_TOKEN,
-        }
+        inds_to_tokens = get_pad_dict()
 
     counter = collections.Counter(token_list)
     count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
@@ -169,6 +177,15 @@ def clean_data(data, lower=False, punctuation=False, whitespace=False, other=Fal
     return data
 
 
+def clean_with_vocab(data, w_i):
+    # Delete characters not in vocab
+    for c in set(data):
+        if c not in w_i:
+            data = data.replace(c, "")
+
+    return data
+
+
 def pretrained_embedding(filename, vocab, input_length, freeze=True):
     """
     Currently only works with json files
@@ -236,4 +253,41 @@ class KerasBatchGenerator:
                 # convert all of temp_y into a one hot representation
                 y[i, :, :] = keras.utils.to_categorical(temp_y, num_classes=self.vocab_size)
                 self.current_idx += self.skip_step
+            yield x, y
+
+
+class RandomSampleGenerator:
+    def __init__(self, data, num_steps, batch_size, vocab_size):
+        """
+        :param data:        list[int]
+        :param num_steps:   int
+        :param batch_size:  int
+        :param vocab_size:  int
+        """
+        self.data = data
+        self.num_steps = num_steps
+        self.batch_size = batch_size
+        self.vocab_size = vocab_size
+
+        self.sample_indices = np.arange(len(data) - num_steps)
+        np.random.shuffle(self.sample_indices)
+        self.current_idx = 0
+
+    def generate(self):
+        x = np.zeros((self.batch_size, self.num_steps))
+        y = np.zeros((self.batch_size, self.num_steps, self.vocab_size))
+        while True:
+            for i in range(self.batch_size):
+                if self.current_idx >= len(self.sample_indices):
+                    # reset the index back to the start of the data set
+                    self.sample_indices = np.arange(len(self.data) - self.num_steps)
+                    np.random.shuffle(self.sample_indices)
+                    self.current_idx = 0
+
+                idx = self.sample_indices[self.current_idx]
+                x[i, :] = self.data[idx:idx + self.num_steps]
+                temp_y = self.data[idx + 1:idx + self.num_steps + 1]
+                # convert all of temp_y into a one hot representation
+                y[i, :, :] = keras.utils.to_categorical(temp_y, num_classes=self.vocab_size)
+                self.current_idx += 1
             yield x, y
